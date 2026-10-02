@@ -75,7 +75,7 @@ jobs:
           # Install Chrome Remote Desktop and desktop environment
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             /tmp/chrome-remote-desktop_current_amd64.deb \
-            xfce4 xfce4-goodies xfce4-terminal dbus-x11 xvfb xhost
+            xfce4 xfce4-goodies xfce4-terminal dbus-x11 xvfb x11-utils
 
           # Add user to chrome-remote-desktop group
           sudo usermod -a -G chrome-remote-desktop "$USER"

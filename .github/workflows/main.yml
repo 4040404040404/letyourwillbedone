@@ -1,1 +1,76 @@
+name: Playwright chained runner
 
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: "Target URL passed to run-finale.js"
+        required: false
+        default: "https://zealous-river-220556.puter.site"
+      chain:
+        description: "Trigger a new identical run after this one finishes"
+        required: false
+        type: boolean
+        default: true
+      enable_tmate:
+        description: "Open an interactive SSH session for live debugging/viewing"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: playwright-chain
+  cancel-in-progress: false
+
+jobs:
+  run-playwright:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Playwright Chromium + OS deps
+        run: npx playwright install --with-deps chromium
+
+      - name: Start tmate session (connect from Arch Linux)
+        if: ${{ inputs.enable_tmate == true }}
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
+
+      - name: Run Playwright script
+        env:
+          TARGET_URL: ${{ inputs.target_url }}
+        run: xvfb-run -a node run-finale.js "$TARGET_URL"
+
+      - name: Trigger next identical run
+        if: ${{ always() && inputs.chain == true }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'main.yml',
+              ref: '${{ github.ref_name }}',
+              inputs: {
+                target_url: '${{ inputs.target_url }}',
+                chain: 'true',
+                enable_tmate: '${{ inputs.enable_tmate }}'
+              }
+            })

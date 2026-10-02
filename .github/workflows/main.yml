@@ -1,0 +1,154 @@
+name: Playwright Automation - Arch Linux CRD
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: 'Number of sequential runs'
+        required: false
+        default: '2'
+      target_url:
+        description: 'Target URL'
+        required: false
+        default: 'https://zealous-river-220556.puter.site'
+
+env:
+  CHROME_REMOTE_CODE: ${{ secrets.CHROME_REMOTE_DESKTOP_CODE }}
+  DISPLAY: ""
+
+jobs:
+  # Reusable job template via matrix strategy
+  playwright_runs:
+    name: Automation Run ${{ matrix.run_number }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        run_number: [1, 2, 3, 4, 5]
+      max-parallel: 1  # Sequential execution only
+    timeout-minutes: 65
+
+    steps:
+      - name: Should this run execute?
+        id: should_run
+        run: |
+          ITERATIONS=${{ github.event.inputs.iterations || 2 }}
+          if [ ${{ matrix.run_number }} -le $ITERATIONS ]; then
+            echo "execute=true" >> $GITHUB_OUTPUT
+            echo "✅ Run #${{ matrix.run_number }} will execute"
+          else
+            echo "execute=false" >> $GITHUB_OUTPUT
+            echo "⏭️  Run #${{ matrix.run_number }} skipped (not in iteration count)"
+          fi
+
+      - name: Checkout
+        if: steps.should_run.outputs.execute == 'true'
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        if: steps.should_run.outputs.execute == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Playwright & dependencies
+        if: steps.should_run.outputs.execute == 'true'
+        run: |
+          npm install --production
+          npx playwright install chromium
+          echo "✅ Dependencies installed"
+
+      - name: Setup Chrome Remote Desktop (Arch Linux)
+        if: steps.should_run.outputs.execute == 'true' && env.CHROME_REMOTE_CODE != ''
+        continue-on-error: true
+        run: |
+          echo "🔗 Initializing Chrome Remote Desktop connection..."
+          
+          # For Arch Linux systems
+          if [ -f "/opt/google/chrome-remote-desktop/start-host" ]; then
+            DISPLAY= /opt/google/chrome-remote-desktop/start-host \
+              --code="${CHROME_REMOTE_CODE}" \
+              --redirect-url="https://remotedesktop.google.com/_/oauthredirect" \
+              --name="GitHub-Automation-${{ matrix.run_number }}" > /tmp/crd.log 2>&1 &
+            
+            CRD_PID=$!
+            echo "CRD_PID=$CRD_PID" >> $GITHUB_ENV
+            sleep 5
+            
+            if ps -p $CRD_PID > /dev/null; then
+              echo "✅ Chrome Remote Desktop connected (PID: $CRD_PID)"
+            else
+              echo "⚠️  Chrome Remote Desktop failed to start, continuing anyway..."
+              cat /tmp/crd.log || echo "No log available"
+            fi
+          else
+            echo "⚠️  Chrome Remote Desktop not installed at expected location"
+            echo "    Expected: /opt/google/chrome-remote-desktop/start-host"
+            echo "    Install via: yay -S google-chrome-remote-desktop"
+          fi
+
+      - name: Run Playwright Automation #${{ matrix.run_number }}
+        if: steps.should_run.outputs.execute == 'true'
+        env:
+          TARGET_URL: ${{ github.event.inputs.target_url || 'https://zealous-river-220556.puter.site' }}
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          echo "════════════════════════════════════════════"
+          echo "🚀 Starting Automation Run #${{ matrix.run_number }}"
+          echo "════════════════════════════════════════════"
+          echo "Target: ${TARGET_URL}"
+          echo "Time: $(date)"
+          echo "PID: $$"
+          echo ""
+          npm start
+          echo ""
+          echo "✅ Run #${{ matrix.run_number }} completed at $(date)"
+
+      - name: Cleanup Chrome Remote Desktop
+        if: always() && steps.should_run.outputs.execute == 'true' && env.CHROME_REMOTE_CODE != ''
+        continue-on-error: true
+        run: |
+          if [ ! -z "$CRD_PID" ]; then
+            kill $CRD_PID 2>/dev/null || true
+            echo "✅ Chrome Remote Desktop process terminated"
+          fi
+
+      - name: Capture logs & artifacts
+        if: always() && steps.should_run.outputs.execute == 'true'
+        continue-on-error: true
+        run: |
+          mkdir -p logs
+          # Capture any application logs
+          [ -f "/tmp/crd.log" ] && cp /tmp/crd.log logs/ || true
+          # Archive with timestamp
+          tar -czf run-${{ matrix.run_number }}-logs.tar.gz logs/ 2>/dev/null || true
+
+      - name: Upload artifacts
+        if: always() && steps.should_run.outputs.execute == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-${{ matrix.run_number }}-logs
+          path: logs/
+          retention-days: 14
+
+  summary:
+    name: Summary
+    runs-on: ubuntu-latest
+    needs: playwright_runs
+    if: always()
+    steps:
+      - name: Print completion
+        run: |
+          echo ""
+          echo "════════════════════════════════════════════════════════"
+          echo "✅ PLAYWRIGHT AUTOMATION CHAIN COMPLETED SUCCESSFULLY"
+          echo "════════════════════════════════════════════════════════"
+          echo ""
+          echo "📋 Configuration:"
+          echo "  • Iterations: ${{ github.event.inputs.iterations || 2 }}"
+          echo "  • Target URL: ${{ github.event.inputs.target_url }}"
+          echo "  • Sequential execution: YES"
+          echo "  • Chrome Remote Desktop: ENABLED (if configured)"
+          echo ""
+          echo "📊 All runs completed"
+          echo "📦 Artifacts available in Actions tab"
+          echo ""

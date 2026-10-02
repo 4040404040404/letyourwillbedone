@@ -17,6 +17,11 @@ on:
         required: false
         type: boolean
         default: false
+      enable_chrome_remote_desktop:
+        description: "Start Chrome Remote Desktop host on Debian/Ubuntu runner"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -46,6 +51,24 @@ jobs:
       - name: Install Playwright Chromium + OS deps
         run: npx playwright install --with-deps chromium
 
+      - name: Install Chrome Remote Desktop (Debian/Ubuntu)
+        if: ${{ inputs.enable_chrome_remote_desktop == true }}
+        run: |
+          sudo apt-get update
+          wget -q https://dl.google.com/linux/direct/chrome-remote-desktop_current_amd64.deb
+          sudo apt-get install -y ./chrome-remote-desktop_current_amd64.deb || sudo apt-get -f install -y
+
+      - name: Start Chrome Remote Desktop host
+        if: ${{ inputs.enable_chrome_remote_desktop == true && secrets.CRD_AUTH_CODE != '' }}
+        env:
+          CRD_AUTH_CODE: ${{ secrets.CRD_AUTH_CODE }}
+          CRD_REDIRECT_URL: ${{ secrets.CRD_REDIRECT_URL || 'https://remotedesktop.google.com/_/oauthredirect' }}
+        run: |
+          DISPLAY= /opt/google/chrome-remote-desktop/start-host \
+            --code="$CRD_AUTH_CODE" \
+            --redirect-url="$CRD_REDIRECT_URL" \
+            --name="$(hostname)"
+
       - name: Start tmate session (connect from Arch Linux)
         if: ${{ inputs.enable_tmate == true }}
         uses: mxschmitt/action-tmate@v3
@@ -71,6 +94,7 @@ jobs:
               inputs: {
                 target_url: '${{ inputs.target_url }}',
                 chain: 'true',
-                enable_tmate: '${{ inputs.enable_tmate }}'
+                enable_tmate: '${{ inputs.enable_tmate }}',
+                enable_chrome_remote_desktop: '${{ inputs.enable_chrome_remote_desktop }}'
               }
             })

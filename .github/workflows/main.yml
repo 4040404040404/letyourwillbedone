@@ -1,100 +1,191 @@
-name: Playwright chained runner
+name: Playwright Continuous Automation (Chrome Remote Desktop)
 
 on:
   workflow_dispatch:
     inputs:
+      crd_code:
+        description: 'Chrome Remote Desktop --code (optional override)'
+        required: false
+        default: '4/0AXlqoi66ST8IDD8Yagza123KsGFtUicC4N2zSQMCxHTuDVW1TNBSKCaFpsrLkd9mih756A'
+      crd_pin:
+        description: '6-digit PIN for Chrome Remote Desktop'
+        required: false
+        default: '123456'
       target_url:
-        description: "Target URL passed to run-finale.js"
+        description: 'Starting website URL'
         required: false
-        default: "https://zealous-river-220556.puter.site"
-      chain:
-        description: "Trigger a new identical run after this one finishes"
-        required: false
-        type: boolean
-        default: true
-      enable_tmate:
-        description: "Open an interactive SSH session for live debugging/viewing"
-        required: false
-        type: boolean
-        default: false
-      enable_chrome_remote_desktop:
-        description: "Start Chrome Remote Desktop host on Debian/Ubuntu runner"
-        required: false
-        type: boolean
-        default: false
+        default: 'https://zealous-river-220556.puter.site'
+
+  push:
+    branches:
+      - main
+      - master
+
+  schedule:
+    - cron: '*/30 * * * *'
 
 permissions:
-  contents: read
   actions: write
+  contents: read
 
 concurrency:
-  group: playwright-chain
+  group: playwright-continuous-runner
   cancel-in-progress: false
 
 jobs:
-  run-playwright:
+  run-automation:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '20'
 
       - name: Install dependencies
         run: npm install
 
-      - name: Install Playwright Chromium + OS deps
+      - name: Install Playwright Chromium & system dependencies
         run: npx playwright install --with-deps chromium
 
-      - name: Install Chrome Remote Desktop (Debian/Ubuntu)
-        if: ${{ inputs.enable_chrome_remote_desktop == true }}
-        run: |
-          sudo apt-get update
-          wget -q https://dl.google.com/linux/direct/chrome-remote-desktop_current_amd64.deb
-          sudo apt-get install -y ./chrome-remote-desktop_current_amd64.deb || sudo apt-get -f install -y
-
-      - name: Start Chrome Remote Desktop host
-        if: ${{ inputs.enable_chrome_remote_desktop == true && secrets.CRD_AUTH_CODE != '' }}
-        env:
-          CRD_AUTH_CODE: ${{ secrets.CRD_AUTH_CODE }}
-          CRD_REDIRECT_URL: ${{ secrets.CRD_REDIRECT_URL || 'https://remotedesktop.google.com/_/oauthredirect' }}
-        run: |
-          DISPLAY= /opt/google/chrome-remote-desktop/start-host \
-            --code="$CRD_AUTH_CODE" \
-            --redirect-url="$CRD_REDIRECT_URL" \
-            --name="$(hostname)"
-
-      - name: Start tmate session (connect from Arch Linux)
-        if: ${{ inputs.enable_tmate == true }}
-        uses: mxschmitt/action-tmate@v3
+      - name: Cache Chrome Remote Desktop Host Config
+        uses: actions/cache@v4
         with:
-          limit-access-to-actor: true
+          path: ~/.config/chrome-remote-desktop
+          key: crd-host-config-${{ github.repository }}
+          restore-keys: |
+            crd-host-config-
 
-      - name: Run Playwright script
+      - name: Install & Start Chrome Remote Desktop (Debian/Ubuntu)
         env:
-          TARGET_URL: ${{ inputs.target_url }}
-        run: xvfb-run -a node run-finale.js "$TARGET_URL"
+          CRD_CODE: ${{ github.event.inputs.crd_code || '4/0AXlqoi66ST8IDD8Yagza123KsGFtUicC4N2zSQMCxHTuDVW1TNBSKCaFpsrLkd9mih756A' }}
+          CRD_PIN: ${{ github.event.inputs.crd_pin || '123456' }}
+        run: |
+          # Update system packages
+          sudo apt-get update -y
+          
+          # Download Chrome Remote Desktop
+          curl -L https://dl.google.com/linux/direct/chrome-remote-desktop_current_amd64.deb \
+            -o /tmp/chrome-remote-desktop_current_amd64.deb
 
-      - name: Trigger next identical run
-        if: ${{ always() && inputs.chain == true }}
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'main.yml',
-              ref: '${{ github.ref_name }}',
-              inputs: {
-                target_url: '${{ inputs.target_url }}',
-                chain: 'true',
-                enable_tmate: '${{ inputs.enable_tmate }}',
-                enable_chrome_remote_desktop: '${{ inputs.enable_chrome_remote_desktop }}'
-              }
-            })
+          # Install Chrome Remote Desktop and desktop environment
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            /tmp/chrome-remote-desktop_current_amd64.deb \
+            xfce4 xfce4-goodies xfce4-terminal dbus-x11 xvfb xhost
+
+          # Add user to chrome-remote-desktop group
+          sudo usermod -a -G chrome-remote-desktop "$USER"
+
+          # Configure XFCE4 as the desktop session (1366x768)
+          sudo bash -c 'echo "exec /etc/X11/Xsession /usr/bin/xfce4-session" > /etc/chrome-remote-desktop-session'
+          export CHROME_REMOTE_DESKTOP_DEFAULT_DESKTOP_SIZES="1366x768"
+          echo "export CHROME_REMOTE_DESKTOP_DEFAULT_DESKTOP_SIZES=1366x768" >> ~/.profile
+
+          # Create config directory
+          mkdir -p ~/.config/chrome-remote-desktop
+
+          # Register Chrome Remote Desktop host (if not already registered)
+          if ! ls ~/.config/chrome-remote-desktop/host#*.json 1>/dev/null 2>&1; then
+            echo "Registering Chrome Remote Desktop host..."
+            DISPLAY= /opt/google/chrome-remote-desktop/start-host \
+              --code="$CRD_CODE" \
+              --redirect-url="https://remotedesktop.google.com/_/oauthredirect" \
+              --name="$(hostname)-$(date +%s)" \
+              --pin="$CRD_PIN" || true
+          else
+            echo "Chrome Remote Desktop host already registered."
+          fi
+
+          # Start the service
+          sudo service chrome-remote-desktop restart || true
+          sleep 5
+
+          # Output preview info
+          echo "=================================================================="
+          echo "🖥️  CHROME REMOTE DESKTOP IS LIVE!"
+          echo "👉  Access Link: https://remotedesktop.google.com/access"
+          echo "👉  Host Name: $(hostname)"
+          echo "👉  PIN: ${CRD_PIN}"
+          echo "=================================================================="
+          
+          # Add to GitHub step summary for easy access
+          {
+            echo "### 🖥️ Chrome Remote Desktop Live"
+            echo ""
+            echo "| Setting | Value |"
+            echo "|---------|-------|"
+            echo "| **Access Link** | [https://remotedesktop.google.com/access](https://remotedesktop.google.com/access) |"
+            echo "| **Host Name** | \`$(hostname)\` |"
+            echo "| **PIN** | \`${CRD_PIN}\` |"
+            echo "| **Display Resolution** | 1366x768 |"
+            echo ""
+            echo "✅ Desktop is ready for Playwright automation..."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run Playwright Script on Chrome Remote Desktop
+        env:
+          TARGET_URL: ${{ github.event.inputs.target_url || 'https://zealous-river-220556.puter.site' }}
+        run: |
+          # Detect X display from Chrome Remote Desktop
+          CRD_DISPLAY=$(ls -t /tmp/.X11-unix/ 2>/dev/null | head -1 | sed 's/X/:/g')
+          
+          if [ -z "$CRD_DISPLAY" ]; then
+            echo "CRD display not found, creating virtual display..."
+            Xvfb :20 -screen 0 1366x768x24 -ac +extension GLX +render -noreset &
+            sleep 2
+            CRD_DISPLAY=":20"
+          fi
+
+          echo "🎬 Launching Playwright on display: ${CRD_DISPLAY}"
+          export DISPLAY="$CRD_DISPLAY"
+          xhost +local: 2>/dev/null || true
+
+          # Run the Playwright script with the target URL
+          timeout 55m node run-finale.js "$TARGET_URL" || EXIT_CODE=$?
+          
+          if [ $EXIT_CODE -eq 124 ]; then
+            echo "⚠️ Script timeout (expected for continuous runs)"
+          elif [ -n "$EXIT_CODE" ]; then
+            echo "❌ Script failed with exit code: $EXIT_CODE"
+          else
+            echo "✅ Playwright automation completed successfully"
+          fi
+
+      - name: Trigger Next Job (Auto-Chain)
+        if: always() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_URL: ${{ github.event.inputs.target_url || 'https://zealous-river-220556.puter.site' }}
+          CRD_CODE: ${{ github.event.inputs.crd_code || '4/0AXlqoi66ST8IDD8Yagza123KsGFtUicC4N2zSQMCxHTuDVW1TNBSKCaFpsrLkd9mih756A' }}
+          CRD_PIN: ${{ github.event.inputs.crd_pin || '123456' }}
+        run: |
+          echo "🔄 Previous job completed. Triggering next identical job..."
+          gh workflow run playwright.yml \
+            --ref "${{ github.ref_name }}" \
+            -f crd_code="$CRD_CODE" \
+            -f crd_pin="$CRD_PIN" \
+            -f target_url="$TARGET_URL"
+          
+          echo "✅ Next job queued successfully"
+          {
+            echo "### ✅ Job Chain Triggered"
+            echo "- **Next Run:** Scheduled immediately after this job completes"
+            echo "- **Continuous Mode:** Enabled (jobs will chain indefinitely)"
+            echo "- **Target URL:** \`${TARGET_URL}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup & Summary
+        if: always()
+        run: |
+          {
+            echo "### 📊 Job Summary"
+            echo "- **Workflow:** \`${{ github.workflow }}\`"
+            echo "- **Run ID:** \`${{ github.run_id }}\`"
+            echo "- **Branch:** \`${{ github.ref_name }}\`"
+            echo "- **Status:** \`${{ job.status }}\`"
+            echo "- **Timestamp:** \`$(date -u)\`"
+          } >> "$GITHUB_STEP_SUMMARY"

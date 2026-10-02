@@ -77,8 +77,12 @@ jobs:
             /tmp/chrome-remote-desktop_current_amd64.deb \
             xfce4 xfce4-goodies xfce4-terminal dbus-x11 xvfb x11-utils
 
-          # Add user to chrome-remote-desktop group
-          sudo usermod -a -G chrome-remote-desktop "$USER"
+          # Add user to chrome-remote-desktop group (if group exists)
+          if getent group chrome-remote-desktop > /dev/null; then
+            sudo usermod -a -G chrome-remote-desktop "$USER"
+          else
+            echo "Note: chrome-remote-desktop group doesn't exist yet (will be created on first connection)"
+          fi
 
           # Configure XFCE4 as the desktop session (1366x768)
           sudo bash -c 'echo "exec /etc/X11/Xsession /usr/bin/xfce4-session" > /etc/chrome-remote-desktop-session'
@@ -90,19 +94,31 @@ jobs:
 
           # Register Chrome Remote Desktop host (if not already registered)
           if ! ls ~/.config/chrome-remote-desktop/host#*.json 1>/dev/null 2>&1; then
-            echo "Registering Chrome Remote Desktop host..."
-            DISPLAY= /opt/google/chrome-remote-desktop/start-host \
+            echo "🔐 Registering Chrome Remote Desktop host..."
+            DISPLAY= timeout 30 /opt/google/chrome-remote-desktop/start-host \
               --code="$CRD_CODE" \
               --redirect-url="https://remotedesktop.google.com/_/oauthredirect" \
               --name="$(hostname)-$(date +%s)" \
-              --pin="$CRD_PIN" || true
+              --pin="$CRD_PIN" 2>&1 || {
+              echo "⚠️ Registration may have timed out (this is normal), continuing..."
+            }
+            sleep 2
           else
-            echo "Chrome Remote Desktop host already registered."
+            echo "✅ Chrome Remote Desktop host already registered."
           fi
 
-          # Start the service
-          sudo service chrome-remote-desktop restart || true
+          # Ensure CRD service is running
+          echo "🚀 Starting Chrome Remote Desktop service..."
+          sudo systemctl restart chrome-remote-desktop --user 2>/dev/null || true
+          sudo service chrome-remote-desktop restart 2>/dev/null || true
           sleep 5
+          
+          # Check if service is running
+          if sudo systemctl is-active --quiet chrome-remote-desktop; then
+            echo "✅ Chrome Remote Desktop service is running"
+          else
+            echo "⚠️ Service status unknown, but continuing (X display may still work)"
+          fi
 
           # Output preview info
           echo "=================================================================="

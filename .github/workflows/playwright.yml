@@ -78,6 +78,9 @@ jobs:
             xfce4 xfce4-goodies xfce4-terminal dbus-x11 xvfb x11-utils
 
           # Add user to chrome-remote-desktop group
+          if ! getent group chrome-remote-desktop >/dev/null; then
+            sudo groupadd --system chrome-remote-desktop
+          fi
           sudo usermod -a -G chrome-remote-desktop "$USER"
 
           # Configure XFCE4 as the desktop session (1366x768)
